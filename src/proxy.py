@@ -78,12 +78,12 @@ def handle_client(client_socket:socket) -> None:
 # forward request to server function
 def forward_request_to_server(host:str, path:str, request:str) -> bytes:
     # creates a client socket
-    remote = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    remote.connect((host, 80))  # Connect to the server on port 80 (HTTP)
-    # sends the request to the server
-    try:
-        
+    # remote = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    # remote.connect((host, 80))  # Connect to the server on port 80 (HTTP)
+    # # sends the request to the server
+    # try:
     
+    pass
     # receives the response from the server
     
     # sends response back to the client
