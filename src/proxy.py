@@ -25,18 +25,23 @@ def parse_request(request:str) -> tuple[str, str]:
         first_line = lines[0]
         print("First request line:", first_line)
 
-        method, raw_path, protocol = first_line.split()
+        # splits the first line into method, path, and protocol
+        _, raw_path, _ = first_line.split() 
 
         if not raw_path.startswith("/"):
-            return None, None
+            raise ValueError("Invalid request: path must start with '/'")
 
-        # The path starts with something like /www.example.org or /www.example.org/some/page
+        # The path should be in the format /www.example.org or /www.example.org/some/page
         stripped_path = raw_path.lstrip('/')  # remove the first slash
-
+        
+        # Split the path into host and path parts
         parts = stripped_path.split('/', 1)
+        if len(parts) == 0 or not parts[0]:
+            raise ValueError("Invalid request: no host specified")
+            
         host = parts[0]  # 'www.example.org'
         path = '/' + parts[1] if len(parts) > 1 else '/'
-
+        
         return host, path
     except Exception as e:
         print("Failed to parse request:", e)
@@ -44,11 +49,27 @@ def parse_request(request:str) -> tuple[str, str]:
 
 
 
-# handle client function
+"""
+    Handles a client connection by receiving the request, parsing it,
+    and forwarding it to the target server.
+    
+    Args:
+        client_socket (socket): The socket object for the client connection
+        
+    Returns:
+        None
+        
+    The function performs the following steps:
+    1. Receives and decodes the client request
+    2. Parses the request to extract host and path
+    3. Forwards the request to the target server
+    4. Sends the server's response back to the client
+    5. Closes the client socket when done
+"""
+
 def handle_client(client_socket:socket) -> None:
     try:
         request:str = client_socket.recv(BUFFER_SIZE).decode()
-    
     
         # calls parse_request function
         host, path = parse_request(request)
