@@ -1,167 +1,163 @@
-import sys
-import os
-import time
-import socket
-import select
+import sys, os, time, socket, select
 
-# Constants
-LISTEN_PORT = 8888
-BUFFER_SIZE = 4096
+class ProxyServer:
+    def __init__(self, host: str = 'localhost', port: int = 8888):
+        self.host = host
+        self.port = port
 
+        self.inputs: list[socket.socket] = []      # All sockets to read from
+        self.outputs: list[socket.socket] = []     # Sockets ready to write to
+        self.message_queues: dict[socket.socket, bytes] = {}  # client_socket -> data to send
 
+        self.client_to_server: dict[socket.socket, socket.socket] = {}  # client_socket -> server_socket
+        self.server_to_client: dict[socket.socket, socket.socket] = {}  # server_socket -> client_socket
+        self.request_buffers: dict[socket.socket, bytes] = {}   # client_socket -> accumulated request
+        self.response_buffers: dict[socket.socket, bytes] = {}  # client_socket -> data from server 
 
-"""
-    Parses an HTTP request to extract the target host and path.
-    
-    The function expects requests in the format:
-    GET /www.example.com/path HTTP/1.1
-    
-    Args:
-        request (str): The raw HTTP request string
-"""
-def parse_request(request:str) -> tuple[str, str]:
-    try:
-        lines = request.split('\r\n')
-        first_line = lines[0]
-        print("First request line:", first_line)
+        self.listener: socket.socket = self.create_listening_socket()
+        self.inputs.append(self.listener)
 
-        # splits the first line into method, path, and protocol
-        _, raw_path, _ = first_line.split() 
+    def create_listening_socket(self) -> socket.socket:
+        sock: socket.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind((self.host, self.port))
+        sock.listen()
+        sock.setblocking(False)
+        return sock
 
-        if not raw_path.startswith("/"):
-            raise ValueError("Invalid request: path must start with '/'")
+    def run(self) -> None:
+        while True:
+            readable, writable, _ = select.select(self.inputs, self.outputs, [])
 
-        # The path should be in the format /www.example.org or /www.example.org/some/page
-        stripped_path = raw_path.lstrip('/')  # remove the first slash
-        
-        # Split the path into host and path parts
-        parts = stripped_path.split('/', 1)
-        if len(parts) == 0 or not parts[0]:
-            raise ValueError("Invalid request: no host specified")
-            
-        host = parts[0]  # 'www.example.org'
-        path = '/' + parts[1] if len(parts) > 1 else '/'
-        
-        return host, path
-    except Exception as e:
-        print("Failed to parse request:", e)
-        return None, None
+            for sock in readable:
+                if sock is self.listener:
+                    self.accept_new_client()
+                elif sock in self.client_to_server:
+                    self.receive_from_server(sock)
+                elif sock in self.inputs:
+                    self.receive_from_client(sock)
 
+            for sock in writable:
+                if sock in self.response_buffers:
+                    self.send_to_client(sock)
 
+    def accept_new_client(self) -> None:
+        client_socket, _ = self.listener.accept()
+        client_socket.setblocking(False)
+        self.inputs.append(client_socket)
+        self.request_buffers[client_socket] = b""
 
-"""
-    Handles a client connection by receiving the request, parsing it,
-    and forwarding it to the target server.
-    
-    Args:
-        client_socket (socket): The socket object for the client connection
-        
-    Returns:
-        None
-        
-    The function performs the following steps:
-    1. Receives and decodes the client request
-    2. Parses the request to extract host and path
-    3. Forwards the request to the target server
-    4. Sends the server's response back to the client
-    5. Closes the client socket when done
-"""
+    def receive_from_client(self, client_socket: socket.socket) -> None:
+        try:
+            data = client_socket.recv(4096)
+        except ConnectionResetError:
+            data = b""
 
-def handle_client(client_socket:socket) -> None:
-    try:
-        request:str = client_socket.recv(BUFFER_SIZE).decode()
-    
-        # calls parse_request function
-        host, path = parse_request(request)
-    
+        if data:
+            self.request_buffers[client_socket] += data
+            if b"\r\n\r\n" in self.request_buffers[client_socket]:
+                self.forward_request_to_server(client_socket)
+        else:
+            self.cleanup(client_socket)
 
-        if host is None:
-            print("Invalid request, Host is None")
-            client_socket.close()
+    def forward_request_to_server(self, client_socket: socket.socket) -> None:
+        request_data = self.request_buffers[client_socket]
+        server_host = self.extract_host(request_data)
+        if not server_host:
+            self.cleanup(client_socket)
             return
 
-        # calls forward_request_to_server function
-        print(f"Forwarding request to {host}{path}")
-        response = forward_request_to_server(host, path, request)
-        
-        
-        client_socket.sendall(response)
-    except Exception as e:
-        print("Error handling client:", e)
-    finally:
-        client_socket.close()
-        
-    
+        try:
+            server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            server_socket.setblocking(False)
+            server_socket.connect_ex((server_host, 80))
+        except Exception:
+            self.cleanup(client_socket)
+            return
 
-    
+        self.inputs.append(server_socket)
+        self.client_to_server[client_socket] = server_socket
+        self.server_to_client[server_socket] = client_socket
 
+        try:
+            server_socket.sendall(self.adjust_request(request_data))
+        except BlockingIOError:
+            pass  # It'll send when writable in a future iteration
 
-# forward request to server function
-def forward_request_to_server(host:str, path:str, request:str) -> bytes:
-    # creates a client socket
-    # remote = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    # remote.connect((host, 80))  # Connect to the server on port 80 (HTTP)
-    # # sends the request to the server
-    # try:
-    
-    pass
-    # receives the response from the server
-    
-    # sends response back to the client
+        self.response_buffers[client_socket] = b""
 
+    def receive_from_server(self, server_socket: socket.socket) -> None:
+        client_socket = self.server_to_client[server_socket]
+        try:
+            data = server_socket.recv(4096)
+        except ConnectionResetError:
+            data = b""
 
+        if data:
+            self.response_buffers[client_socket] += data
+            if client_socket not in self.outputs:
+                self.outputs.append(client_socket)
+        else:
+            self.cleanup(server_socket)
 
+    def send_to_client(self, client_socket: socket.socket) -> None:
+        buffer = self.response_buffers[client_socket]
+        if buffer:
+            try:
+                sent = client_socket.send(buffer)
+                self.response_buffers[client_socket] = buffer[sent:]
+            except BlockingIOError:
+                return
 
-# main function
-def main():
+        if not self.response_buffers[client_socket]:
+            self.outputs.remove(client_socket)
+            self.cleanup(client_socket)
 
-    # Create and configure the server socket
-    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server_socket.bind(("localhost", LISTEN_PORT))
-    server_socket.listen()
+    def cleanup(self, sock: socket.socket) -> None:
+        # Remove from all mappings and close
+        if sock in self.inputs:
+            self.inputs.remove(sock)
+        if sock in self.outputs:
+            self.outputs.remove(sock)
+        sock.close()
 
-    print(f"Server listening on {"localhost"}:{LISTEN_PORT}")
+        if sock in self.client_to_server:
+            server = self.client_to_server.pop(sock)
+            self.server_to_client.pop(server, None)
+            self.cleanup(server)
 
-    # List of sockets to monitor
-    sockets_list = [server_socket]
-    clients = {}
+        if sock in self.server_to_client:
+            client = self.server_to_client.pop(sock)
+            self.client_to_server.pop(client, None)
+            self.cleanup(client)
 
-    while True:
-        # Wait for any socket to be ready (readable)
-        read_sockets, _, exception_sockets = select.select(sockets_list, [], sockets_list)
+        self.request_buffers.pop(sock, None)
+        self.response_buffers.pop(sock, None)
 
-        for notified_socket in read_sockets:
-            if notified_socket == server_socket:
-                # New connection
-                client_socket, client_address = server_socket.accept()
-                sockets_list.append(client_socket)
-                clients[client_socket] = client_address
-                print(f"New connection from {client_address}")
+    def extract_host(self, request_data: bytes) -> str | None:
+        try:
+            lines: list[str] = request_data.decode().split('\r\n')
+            for line in lines:
+                if line.lower().startswith('host:'):
+                    return line.split(':', 1)[1].strip()
+        except Exception:
+            return None
+        return None
+
+    def adjust_request(self, request_data: bytes) -> bytes:
+        lines = request_data.decode().split('\r\n')
+        new_lines = []
+        for line in lines:
+            if line.lower().startswith('proxy-connection:'):
+                continue
+            elif line.lower().startswith('connection:'):
+                new_lines.append('Connection: close')
             else:
-                # Data from an existing client
-                try:
-                    handle_client(notified_socket)
-                    # data = notified_socket.recv(1024)
-                    # if not data:
-                    #     # Connection closed
-                    #     print(f"Closed connection from {clients[notified_socket]}")
-                    #     sockets_list.remove(notified_socket)
-                    #     del clients[notified_socket]
-                    #     notified_socket.close()
-                    # else:
-                    #     print(f"Received from {clients[notified_socket]}: {data.decode()}")
-                    #     notified_socket.sendall(b"Message received!")
-                except:
-                    sockets_list.remove(notified_socket)
-                    notified_socket.close()
-
-        # Handle any exceptions
-        for notified_socket in exception_sockets:
-            sockets_list.remove(notified_socket)
-            notified_socket.close()
+                new_lines.append(line)
+        return '\r\n'.join(new_lines).encode()
 
 
-
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    timeout: int = int(sys.argv[1]) if len(sys.argv) > 1 else 120  # not used yet (for step 4)
+    proxy: ProxyServer = ProxyServer()
+    proxy.run()
