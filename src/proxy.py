@@ -100,7 +100,7 @@ class Cache:
                 print(f"Failed to delete expired cache file: {path}")
             return None
 
-        print(f"Using cached response: {path}")  # ← 🔥 Log here
+        print(f"Using cached response: {path}")
         try:
             with open(path, "rb") as f:
                 return f.read()
@@ -130,9 +130,10 @@ class ProxyServer:
         print(f"Initializing ProxyServer on {host}:{port}")
         self.host = host
         self.port = port
-        self.cache = cache
         
-        self.timeout = timeout
+        #Cache stuff
+        self.cache = cache
+        self.full_response_buffers: dict[socket.socket, bytes] = {}
         
 
         self.inputs: list[socket.socket] = []      # All sockets to read from
@@ -144,6 +145,7 @@ class ProxyServer:
         self.request_buffers: dict[socket.socket, bytes] = {}   # client_socket -> accumulated request
         self.response_buffers: dict[socket.socket, bytes] = {}  # client_socket -> data from server 
         self.server_done: dict[socket.socket, bool] = {}  # client_socket -> True/False
+        
 
 
         self.listener: socket.socket = self.create_listening_socket()
@@ -257,6 +259,20 @@ class ProxyServer:
         
         # print(f"Forwarding request to server:\n{header_str}\n")
 
+        #Check if the request is cacheable
+        key = self.cache.from_request(request_data)
+        if key:
+            cached_data = self.cache.get(key)
+            if cached_data:
+                # print(f"Cache hit for key: {key}")
+                self.response_buffers[client_socket] = cached_data
+                self.server_done[client_socket] = True
+                if client_socket not in self.outputs:
+                    self.outputs.append(client_socket)
+                return
+            else:
+                print(f"Cache miss for key: {key}")
+
         # Extract the host from the request
         server_host = self.extract_host(request_data)
         
@@ -315,6 +331,14 @@ class ProxyServer:
 
         if data:
             self.response_buffers[client_socket] += data
+            
+            # For caching the full response later.
+            if client_socket not in self.full_response_buffers:
+                self.full_response_buffers[client_socket] = b""
+            self.full_response_buffers[client_socket] += data
+
+            
+            
             print(f"Accumulated {len(self.response_buffers[client_socket])} bytes in response buffer")
             if client_socket not in self.outputs:
                 self.outputs.append(client_socket)
@@ -325,6 +349,11 @@ class ProxyServer:
             self.inputs.remove(server_socket)
             server_socket.close()
             self.server_done[client_socket] = True
+            
+            # #Cache the response
+            # key = self.cache.from_request(self.request_buffers.get(client_socket, b""))
+            # if key:
+            #     self.cache.set(key, self.response_buffers[client_socket])
 
 
     def send_to_client(self, client_socket):
@@ -341,6 +370,15 @@ class ProxyServer:
 
         # Only clean up if server is done AND buffer is empty
         if self.server_done.get(client_socket, False) and not self.response_buffers[client_socket]:
+            key = self.cache.from_request(self.request_buffers.get(client_socket, b""))
+            if key:
+                response = self.full_response_buffers.get(client_socket, b"")
+                if response:
+                    print(f"[CACHE] Writing {len(response)} bytes to cache for key: {key}")
+                    self.cache.set(key, response)
+                else:
+                    print("[CACHE] Warning: full response was empty during set")
+
             print("Server done and buffer empty, cleaning up client")
             if client_socket in self.outputs:
                 self.outputs.remove(client_socket)
@@ -376,6 +414,9 @@ class ProxyServer:
         self.request_buffers.pop(sock, None)
         self.response_buffers.pop(sock, None)
         self.server_done.pop(sock, None)
+        
+        self.full_response_buffers.pop(sock, None)
+        
         print("Cleaned up all mappings for socket")
 
 
