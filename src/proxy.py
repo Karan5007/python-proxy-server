@@ -109,7 +109,6 @@ class ProxyServer:
                 print("Complete request received, forwarding to server")
                 self.forward_request_to_server(client_socket)
         else:
-            #TODO: We are closing the socket here, maybe an issue?
             print("No data received from client, cleaning up")
             self.cleanup(client_socket)
 
@@ -118,17 +117,19 @@ class ProxyServer:
         # Get the request data from the request_buffers dict
         request_data = self.request_buffers[client_socket]
 
-        # Only decode the header part (up to \r\n\r\n)
-        header_end = request_data.find(b"\r\n\r\n")
+
+        #DEBUG STATEMENTS:
+        # # Only decode the header part (up to \r\n\r\n)
+        # header_end = request_data.find(b"\r\n\r\n")
         
-        # Printing the header, with error handling
-        try:
-            header_str = request_data[:header_end].decode(errors='replace')
-        except Exception as e:
-            print("Error decoding header:", e)
-            header_str = "<undecodable header>"
+        # # Printing the header, with error handling
+        # try:
+        #     header_str = request_data[:header_end].decode(errors='replace')
+        # except Exception as e:
+        #     print("Error decoding header:", e)
+        #     header_str = "<undecodable header>"
         
-        print(f"Forwarding request to server:\n{header_str}\n")
+        # print(f"Forwarding request to server:\n{header_str}\n")
 
         # Extract the host from the request
         server_host = self.extract_host(request_data)
@@ -138,10 +139,6 @@ class ProxyServer:
             self.cleanup(client_socket)
             return
         
-        # if server_host == "favicon.ico":
-        #     print("Favicon request, skipping")
-        #     return  
-
         # Connect to the server
         print(f"Connecting to server: {server_host}")
         try:
@@ -177,17 +174,12 @@ class ProxyServer:
         self.server_to_client[server_socket] = client_socket
 
         # Initialize the response buffer for the client
-        self.response_buffers[client_socket] = b"" #TODO: this might be too early?
+        self.response_buffers[client_socket] = b""
         print("Response buffer initialized for client")
 
     def receive_from_server(self, server_socket: socket.socket) -> None:
         client_socket = self.server_to_client.get(server_socket)
-        # if client_socket is None:
-        #     print("Client socket not found for this server")
-        #     self.cleanup(server_socket)
-        #     return
 
-        #TODO: is the the best way to handle this?
         try:
             data: bytes = server_socket.recv(4096)
             print(f"Received {len(data)} bytes from server")
