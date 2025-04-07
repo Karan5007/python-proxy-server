@@ -1,7 +1,9 @@
 """
 Declaration:
-I wrote this code, but i used Generative AI to help me debug it, modularize it and add comments.
+I wrote this code, but i used Generative AI to help me debug it, modularize it and add docstrings and comments.
 Hence if comments do not make sense, it is because of the AI
+
+I have the git history of the code, to prove this. Should you require it. 
 """
 
 
@@ -715,6 +717,8 @@ if __name__ == '__main__':
     #For MACOSX
     hostname = socket.gethostname()
     print(f"Hostname: {hostname}")
+    
+    # hostname = "localhost"
     
     
     cache: Cache = Cache(timeout=timeout)
