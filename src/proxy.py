@@ -1,10 +1,139 @@
 import sys, os, time, socket, select
 
+class Cache:
+    def __init__(self, timeout=120, cache_dir="cache"):
+        """
+        Initializes the Cache object.
+
+        Args:
+            timeout (int): Cache expiration time in seconds.
+        """
+        self.cache_dir = cache_dir
+        self.timeout = timeout
+        try:
+            os.makedirs(self.cache_dir)
+        except FileExistsError:
+            pass  # Directory already exists
+
+    def normalize_path(self, path: str) -> str:
+        """
+        Normalizes a path so that trailing slashes or empty paths become consistent.
+
+        Args:
+            path (str): The request path.
+
+        Returns:
+            str: Normalized path used for hashing.
+        """
+        if path.endswith("/") or path == "":
+            return path + "index"
+        return path
+
+    def hash_path(self, path: str) -> str:
+        """
+        Hashes a normalized path into a pseudo-unique hex string using a basic checksum.
+
+        Args:
+            path (str): The normalized request path.
+
+        Returns:
+            str: Hexadecimal hash string (no external libraries used).
+        """
+        path = self.normalize_path(path)
+        total = 0
+        for i, c in enumerate(path):
+            total += (i + 1) * ord(c)
+        return hex(total)[2:]
+
+    def get_cache_path(self, key: str) -> str:
+        """
+        Constructs the full cache file path for a given cache key.
+
+        Args:
+            key (str): Hashed cache key.
+
+        Returns:
+            str: Full path to the cache file.
+        """
+        return f"{self.cache_dir}/{key}.cache"
+
+    def from_request(self, request_data: bytes) -> str | None:
+        """
+        Extracts a cache key from a raw HTTP request, only for GET requests.
+
+        Args:
+            request_data (bytes): Raw HTTP request from the client.
+
+        Returns:
+            str or None: Cache key string, or None if not cacheable.
+        """
+        try:
+            first_line = request_data.decode(errors='replace').split("\r\n")[0]
+            parts = first_line.split()
+            if len(parts) < 2 or parts[0].upper() != "GET":
+                return None
+            return self.hash_path(parts[1])
+        except:
+            return None
+
+    def get(self, key: str) -> bytes | None:
+        """
+        Reads the cached data for a given key if it's still valid.
+        If the cache file has expired, deletes it and returns None.
+
+        Args:
+            key (str): Cache key.
+
+        Returns:
+            bytes or None: Cached response if valid, otherwise None.
+        """
+        path = self.get_cache_path(key)
+        if not os.path.exists(path):
+            return None
+
+        age = time.time() - os.path.getmtime(path)
+        if age > self.timeout:
+            print(f"Cache expired for {key}, deleting.")
+            try:
+                os.remove(path)
+            except:
+                print(f"Failed to delete expired cache file: {path}")
+            return None
+
+        print(f"Using cached response: {path}")  # ← 🔥 Log here
+        try:
+            with open(path, "rb") as f:
+                return f.read()
+        except:
+            print(f"Failed to read cache file: {path}")
+            return None
+
+    def set(self, key: str, data: bytes):
+        """
+        Stores data in the cache under the given key.
+
+        Args:
+            key (str): Cache key.
+            data (bytes): Response data to be cached.
+        """
+        path = self.get_cache_path(key)
+        try:
+            with open(path, "wb") as f:
+                f.write(data)
+            print(f"Cached to: {path}")
+        except:
+            print(f"Failed to write cache to {path}")
+
+
 class ProxyServer:
-    def __init__(self, host: str = 'localhost', port: int = 8888):
+    def __init__(self, host: str = 'localhost', port: int = 8888, cache: Cache = None):
         print(f"Initializing ProxyServer on {host}:{port}")
         self.host = host
         self.port = port
+        self.cache = cache
+        
+        self.timeout = timeout
+        
 
         self.inputs: list[socket.socket] = []      # All sockets to read from
         self.outputs: list[socket.socket] = []     # Sockets ready to write to
@@ -86,10 +215,7 @@ class ProxyServer:
         print(f"Client {client_address} added to inputs list")
 
     def receive_from_client(self, client_socket: socket.socket) -> None:
-        # if client_socket not in self.request_buffers:
-        #     # If we've already processed and cleaned up this client, ignore further reads
-        #     print(f"Ignoring extra data from closed client socket: {client_socket}")
-        #     return
+
         try:
             data = client_socket.recv(4096)
             print(f"Received {len(data)} bytes from client")
@@ -335,10 +461,16 @@ class ProxyServer:
         return new_lines
 
 
+
 if __name__ == '__main__':
     timeout: int = int(sys.argv[1]) if len(sys.argv) > 1 else 120  # not used yet (for step 4)
     print(f"Starting proxy server with timeout: {timeout} seconds")
+    
+    #For MACOSX
     hostname = socket.gethostname()
     print(f"Hostname: {hostname}")
-    proxy: ProxyServer = ProxyServer(host=hostname, port=8888)
+    
+    
+    cache: Cache = Cache(timeout=timeout)
+    proxy: ProxyServer = ProxyServer(host=hostname, port=8888, cache=cache)
     proxy.run()
