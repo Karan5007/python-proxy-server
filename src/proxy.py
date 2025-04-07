@@ -148,8 +148,8 @@ class ProxyServer:
 
             # Adjust the request to the server's format
             adjusted = self.adjust_request(request_data)
-            print("Adjusted request (first 300 bytes or so):")
-            print(adjusted[:300].decode(errors='replace'))
+            # print("Adjusted request (first 300 bytes or so):")
+            # print(adjusted[:300].decode(errors='replace'))
 
             # Add the adjusted request to the message_queues dict
             
@@ -226,25 +226,25 @@ class ProxyServer:
         # Remove from all mappings and close
         if sock in self.inputs:
             self.inputs.remove(sock)
-            print("Removed from inputs list")
+            # print("Removed from inputs list")
         if sock in self.outputs:
             self.outputs.remove(sock)
-            print("Removed from outputs list")
+            # print("Removed from outputs list")
         sock.close()
         print("Socket closed")
 
         if sock in self.client_to_server:
             server = self.client_to_server.pop(sock)
-            print("Removed client-to-server mapping")
+            # print("Removed client-to-server mapping") 
             self.server_to_client.pop(server, None)
-            print("Removed server-to-client mapping")
+            # print("Removed server-to-client mapping")
             self.cleanup(server)
 
         if sock in self.server_to_client:
             client = self.server_to_client.pop(sock)
-            print("Removed server-to-client mapping")
+            # print("Removed server-to-client mapping")
             self.client_to_server.pop(client, None)
-            print("Removed client-to-server mapping")
+            # print("Removed client-to-server mapping")
             self.cleanup(client)
 
         self.request_buffers.pop(sock, None)
