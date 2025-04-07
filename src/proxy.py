@@ -1,3 +1,11 @@
+"""
+Declaration:
+I wrote this code, but i used Generative AI to help me debug it, modularize it and add comments.
+Hence if comments do not make sense, it is because of the AI
+"""
+
+
+
 import sys, os, time, socket, select
 
 class Cache:
@@ -126,6 +134,39 @@ class Cache:
 
 
 class ProxyServer:
+    """
+    A non-blocking HTTP proxy server implementation using Python's socket and select modules.
+    
+    This proxy server can:
+    - Accept client connections and forward HTTP requests to target servers
+    - Cache responses for GET requests to improve performance
+    - Handle multiple concurrent connections using non-blocking I/O
+    - Properly manage socket resources and cleanup
+    
+    The server uses a select-based event loop to handle multiple connections efficiently
+    without threading. It maintains mappings between client and server sockets to route
+    data appropriately.
+    
+    Attributes:
+        host (str): The host address to bind the server to
+        port (int): The port number to listen on
+        cache (Cache): Optional cache object for storing and retrieving responses
+        inputs (list): List of sockets to monitor for incoming data
+        outputs (list): List of sockets to monitor for outgoing data
+        message_queues (dict): Mapping of sockets to data waiting to be sent
+        client_to_server (dict): Mapping of client sockets to their corresponding server sockets
+        server_to_client (dict): Mapping of server sockets to their corresponding client sockets
+        request_buffers (dict): Accumulated request data for each client socket
+        response_buffers (dict): Accumulated response data for each client socket
+        server_done (dict): Flag indicating if a server has finished sending data
+        listener (socket): The main listening socket for accepting new connections
+        full_response_buffers (dict): Complete response data for caching purposes
+    
+    Args:
+        host (str, optional): Host address to bind the server to. Defaults to 'localhost'.
+        port (int, optional): Port number to listen on. Defaults to 8888.
+        cache (Cache, optional): Cache object for storing and retrieving responses. Defaults to None.
+    """
     def __init__(self, host: str = 'localhost', port: int = 8888, cache: Cache = None):
         print(f"Initializing ProxyServer on {host}:{port}")
         self.host = host
@@ -150,26 +191,59 @@ class ProxyServer:
 
         self.listener: socket.socket = self.create_listening_socket()
         self.inputs.append(self.listener)
-        print("ProxyServer initialization complete")
 
     def create_listening_socket(self) -> socket.socket:
+        """
+        Creates and configures the main listening socket for the proxy server.
+        
+        This method:
+        - Creates a new TCP socket
+        - Sets the socket option to reuse the address
+        - Binds the socket to the specified host and port
+        - Starts listening for incoming connections
+        - Sets the socket to non-blocking mode
+        
+        Returns:
+            socket.socket: The configured listening socket ready to accept connections
+        """
         print(f"Creating listening socket on {self.host}:{self.port}")
         sock: socket.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind((self.host, self.port))
         sock.listen()
         sock.setblocking(False)
-        print("Listening socket created successfully")
         return sock
 
     def run(self) -> None:
-        print("Starting proxy server main loop")
+        """
+        Runs the main event loop of the proxy server.
+        
+        This method:
+        - Continuously monitors sockets for readability and writability using select
+        - Handles readable sockets by processing incoming data
+        - Handles writable sockets by sending outgoing data
+        - Runs indefinitely until the program is terminated
+        
+        The event loop is the core of the non-blocking I/O implementation, allowing
+        the server to handle multiple connections concurrently without threading.
+        """
         while True:
             readable, writable, _ = select.select(self.inputs, self.outputs, [])
             self.handle_readables(readable)
             self.handle_writables(writable)
         
     def handle_readables(self, readable):
+        """
+        Processes sockets that are ready for reading.
+        
+        This method handles three types of readable sockets:
+        - The listener socket: accepts new client connections
+        - Server sockets: receives data from target servers
+        - Client sockets: receives data from clients
+        
+        Args:
+            readable: List of sockets that are ready for reading
+        """
         for sock in readable:
             if sock is self.listener:
                 self.accept_new_client()
@@ -179,6 +253,16 @@ class ProxyServer:
                 self.receive_from_client(sock)
 
     def handle_writables(self, writable):
+        """
+        Processes sockets that are ready for writing.
+        
+        This method handles two types of writable sockets:
+        - Client sockets: sends data to clients
+        - Server sockets: sends data to target servers
+        
+        Args:
+            writable: List of sockets that are ready for writing
+        """
         for sock in writable:
             if sock in self.response_buffers:
                 self.send_to_client(sock)
@@ -186,10 +270,22 @@ class ProxyServer:
                 self.send_to_server(sock)
 
     def send_to_server(self, server_socket: socket.socket) -> None:
+        """
+        Sends data from the message queue to a target server.
+        
+        This method:
+        - Retrieves data from the message queue for the given server socket
+        - Sends as much data as possible in a single operation
+        - Updates the message queue with any remaining unsent data
+        - Handles socket errors by cleaning up the connection
+        
+        Args:
+            server_socket (socket.socket): The socket connected to the target server
+        """
         try:
             data = self.message_queues[server_socket]
             sent = server_socket.send(data)
-            print(f"Sent {sent} bytes to server")
+            # print(f"Sent {sent} bytes to server")
             if sent < len(data):
                 self.message_queues[server_socket] = data[sent:]
             else:
@@ -198,49 +294,74 @@ class ProxyServer:
                     self.outputs.remove(server_socket)
                 if server_socket not in self.inputs:
                     self.inputs.append(server_socket)
-                print("All data sent to server, now listening for response")
+
         except Exception as e:
-            print(f"Error sending data to server: {e}")
             self.cleanup(server_socket)
 
-
-
     def accept_new_client(self) -> None:
+        """
+        Accepts a new client connection and sets up the necessary data structures.
+        
+        This method:
+        - Accepts a new connection from the listening socket
+        - Sets the client socket to non-blocking mode
+        - Adds the client socket to the inputs list for monitoring
+        - Initializes an empty request buffer for the client
+        
+        The client connection is now ready to receive data and be processed by the proxy.
+        """
         client_socket, client_address = self.listener.accept()
         
         print(f"New client connected from {client_address}")
         client_socket.setblocking(False)
-        
         self.inputs.append(client_socket)
         self.request_buffers[client_socket] = b""
-        
-        print(f"Client {client_address} added to inputs list")
 
     def receive_from_client(self, client_socket: socket.socket) -> None:
-
+        """
+        Receives data from a client socket and processes it.
+        
+        This method:
+        - Receives data from the client socket
+        - Accumulates the data in the client's request buffer
+        - Checks if a complete HTTP request has been received (indicated by \r\n\r\n)
+        - Forwards the request to the target server when complete
+        - Handles connection errors by cleaning up the socket
+        
+        Args:
+            client_socket (socket.socket): The socket connected to the client
+        """
         try:
             data = client_socket.recv(4096)
-            print(f"Received {len(data)} bytes from client")
         except ConnectionResetError:
-            print("Connection reset by client")
             data = b""
 
         if data:
             # Check if the client socket is in the request_buffers dictionary
             if client_socket not in self.request_buffers:
-                print(f"Client socket not found in request_buffers, adding it")
                 self.request_buffers[client_socket] = b""
                 
             self.request_buffers[client_socket] += data
-            print(f"Accumulated {len(self.request_buffers[client_socket])} bytes in request buffer")
             if b"\r\n\r\n" in self.request_buffers[client_socket]:
-                print("Complete request received, forwarding to server")
                 self.forward_request_to_server(client_socket)
         else:
-            print("No data received from client, cleaning up")
             self.cleanup(client_socket)
 
     def forward_request_to_server(self, client_socket: socket.socket) -> None:
+        """
+        Forwards a client's HTTP request to the appropriate target server.
+        
+        This method:
+        - Checks if the request can be served from cache
+        - Extracts the target host from the request
+        - Establishes a connection to the target server
+        - Adjusts the request to the proper format for the target server
+        - Sets up the necessary mappings between client and server sockets
+        - Initializes response buffers for the client
+        
+        Args:
+            client_socket (socket.socket): The socket connected to the client
+        """
         
         # Get the request data from the request_buffers dict
         request_data = self.request_buffers[client_socket]
@@ -264,14 +385,11 @@ class ProxyServer:
         if key:
             cached_data = self.cache.get(key)
             if cached_data:
-                # print(f"Cache hit for key: {key}")
                 self.response_buffers[client_socket] = cached_data
                 self.server_done[client_socket] = True
                 if client_socket not in self.outputs:
                     self.outputs.append(client_socket)
                 return
-            else:
-                print(f"Cache miss for key: {key}")
 
         # Extract the host from the request
         server_host = self.extract_host(request_data)
@@ -308,23 +426,31 @@ class ProxyServer:
             self.cleanup(client_socket)
             return
 
-        # Add the server socket to the inputs list
-        # self.inputs.append(server_socket) <- NOT GOOD.
-
         # Add the server socket to the client_to_server and server_to_client mappings
         self.client_to_server[client_socket] = server_socket
         self.server_to_client[server_socket] = client_socket
 
         # Initialize the response buffer for the client
         self.response_buffers[client_socket] = b""
-        print("Response buffer initialized for client")
 
     def receive_from_server(self, server_socket: socket.socket) -> None:
+        """
+        Receives data from a server socket and processes it.
+        
+        This method:
+        - Receives data from the server socket
+        - Accumulates the data in the client's response buffer
+        - Stores the data in the full response buffer for caching
+        - Adds the client socket to the outputs list when data is available
+        - Handles connection errors by cleaning up the socket
+        
+        Args:
+            server_socket (socket.socket): The socket connected to the target server
+        """
         client_socket = self.server_to_client.get(server_socket)
 
         try:
             data: bytes = server_socket.recv(4096)
-            print(f"Received {len(data)} bytes from server")
         except ConnectionResetError:
             print("Connection reset by server")
             data = b""
@@ -336,34 +462,35 @@ class ProxyServer:
             if client_socket not in self.full_response_buffers:
                 self.full_response_buffers[client_socket] = b""
             self.full_response_buffers[client_socket] += data
-
             
-            
-            print(f"Accumulated {len(self.response_buffers[client_socket])} bytes in response buffer")
             if client_socket not in self.outputs:
                 self.outputs.append(client_socket)
-                print("Added client to outputs list")
         else:
             # No more data from server
-            print("No more data from server, marking as done")
             self.inputs.remove(server_socket)
             server_socket.close()
             self.server_done[client_socket] = True
-            
-            # #Cache the response
-            # key = self.cache.from_request(self.request_buffers.get(client_socket, b""))
-            # if key:
-            #     self.cache.set(key, self.response_buffers[client_socket])
-
 
     def send_to_client(self, client_socket):
+        """
+        Sends data from the response buffer to a client.
+        
+        This method:
+        - Retrieves data from the response buffer for the given client socket
+        - Sends as much data as possible in a single operation
+        - Updates the response buffer with any remaining unsent data
+        - Handles socket errors by retrying later
+        - Caches the response if the request is cacheable and the server is done
+        - Cleans up the connection when all data has been sent
+        
+        Args:
+            client_socket: The socket connected to the client
+        """
         buffer = self.response_buffers[client_socket]
         if buffer:
             try:
                 sent = client_socket.send(buffer)
-                print(f"Sent {sent} bytes to client")
                 self.response_buffers[client_socket] = buffer[sent:]
-                print(f"Remaining in buffer: {len(self.response_buffers[client_socket])} bytes")
             except BlockingIOError:
                 print("Client socket not ready for writing, will retry later")
                 return
@@ -374,18 +501,27 @@ class ProxyServer:
             if key:
                 response = self.full_response_buffers.get(client_socket, b"")
                 if response:
-                    print(f"[CACHE] Writing {len(response)} bytes to cache for key: {key}")
-                    self.cache.set(key, response)
-                else:
-                    print("[CACHE] Warning: full response was empty during set")
 
-            print("Server done and buffer empty, cleaning up client")
+                    self.cache.set(key, response)
+
             if client_socket in self.outputs:
                 self.outputs.remove(client_socket)
             self.cleanup(client_socket)
 
-
     def cleanup(self, sock: socket.socket) -> None:
+        """
+        Cleans up resources associated with a socket.
+        
+        This method:
+        - Removes the socket from the inputs and outputs lists
+        - Closes the socket
+        - Removes the socket from all mappings (client_to_server, server_to_client)
+        - Cleans up associated buffers and flags
+        - Recursively cleans up related sockets
+        
+        Args:
+            sock (socket.socket): The socket to clean up
+        """
         print(f"Cleaning up socket {sock}")
         # Remove from all mappings and close
         if sock in self.inputs:
@@ -421,6 +557,21 @@ class ProxyServer:
 
 
     def extract_host(self, request_data: bytes) -> str | None:
+        """
+        Extracts the target host from an HTTP request.
+        
+        This method:
+        - Decodes the request data
+        - Parses the first line to extract the request path
+        - Extracts the host part from the path
+        - Validates that the extracted host is valid
+        
+        Args:
+            request_data (bytes): The raw HTTP request data
+            
+        Returns:
+            str | None: The extracted host name, or None if extraction failed
+        """
         try:
             first_line = request_data.decode().split('\r\n')[0]
             parts = first_line.split()
@@ -441,14 +592,27 @@ class ProxyServer:
                 print(f"Not a valid host: {host}")
                 return None
                 
-            print(f"Extracted host from path: {host}")
-            
             return host
         except Exception as e:
             print(f"Error extracting host: {e}")
             return None
 
     def adjust_request(self, request_data: bytes) -> bytes:
+        """
+        Adjusts an HTTP request for forwarding to a target server.
+        
+        This method:
+        - Decodes the request data
+        - Rewrites the request line to use the proper path format
+        - Rewrites or inserts the Host header
+        - Cleans up connection headers
+        
+        Args:
+            request_data (bytes): The raw HTTP request data
+            
+        Returns:
+            bytes: The adjusted request data ready to be sent to the target server
+        """
         lines = request_data.decode(errors='replace').split('\r\n')
 
         # Step 1: Rewrite the request line (GET /path HTTP/1.1)
@@ -463,6 +627,20 @@ class ProxyServer:
         return '\r\n'.join(lines).encode()
 
     def rewrite_request_line(self, request_line: str) -> tuple[str, str]:
+        """
+        Rewrites the request line to use the proper path format for the target server.
+        
+        This method:
+        - Splits the request line into its components
+        - Extracts the host and path from the full path
+        - Constructs a new request line with the proper format
+        
+        Args:
+            request_line (str): The original request line
+            
+        Returns:
+            tuple[str, str]: The rewritten request line and the extracted host
+        """
         parts = request_line.split()
         if len(parts) < 2:
             return request_line, ""
@@ -485,12 +663,39 @@ class ProxyServer:
         return request_line, ""
 
     def rewrite_host_header(self, lines: list[str], host: str) -> list[str]:
+        """
+        Rewrites or inserts the Host header in the HTTP request.
+        
+        This method:
+        - Removes any existing Host headers
+        - Inserts a new Host header with the extracted host
+        
+        Args:
+            lines (list[str]): The lines of the HTTP request
+            host (str): The extracted host name
+            
+        Returns:
+            list[str]: The lines with the rewritten Host header
+        """
         lines = [line for line in lines if not line.lower().startswith('host:')]
         if host:
             lines.insert(1, f"Host: {host}")
         return lines
 
     def rewrite_connection_headers(self, lines: list[str]) -> list[str]:
+        """
+        Cleans up connection headers in the HTTP request.
+        
+        This method:
+        - Removes any Proxy-Connection headers
+        - Replaces Connection headers with "Connection: close"
+        
+        Args:
+            lines (list[str]): The lines of the HTTP request
+            
+        Returns:
+            list[str]: The lines with cleaned up connection headers
+        """
         new_lines = []
         for line in lines:
             if line.lower().startswith("proxy-connection:"):
