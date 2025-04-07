@@ -35,42 +35,44 @@ class ProxyServer:
         print("Starting proxy server main loop")
         while True:
             readable, writable, _ = select.select(self.inputs, self.outputs, [])
-            
-            print(f"Select returned: {len(readable)} readable, {len(writable)} writable sockets")
+            self.handle_readables(readable)
+            self.handle_writables(writable)
+        
+    def handle_readables(self, readable):
+        for sock in readable:
+            if sock is self.listener:
+                self.accept_new_client()
+            elif sock in self.server_to_client:
+                self.receive_from_server(sock)
+            elif sock in self.inputs:
+                self.receive_from_client(sock)
 
-            for sock in readable:
-                if sock is self.listener:
-                    self.accept_new_client()
-                  
-                #this might be a problem, we are not checking if the server socket is in the inputs list    
-                # elif sock in self.client_to_server: 
-                elif sock in self.server_to_client:
-                    self.receive_from_server(sock)
-                elif sock in self.inputs:
-                    self.receive_from_client(sock)
+    def handle_writables(self, writable):
+        for sock in writable:
+            if sock in self.response_buffers:
+                self.send_to_client(sock)
+            elif sock in self.message_queues:
+                self.send_to_server(sock)
 
-            for sock in writable:
-                if sock in self.response_buffers:
-                    #TODO: does this handle when the data is b""?
-                    self.send_to_client(sock)
-                elif sock in self.message_queues:
-                    try:
-                        data = self.message_queues[sock]
-                        sent = sock.send(data)
-                        print(f"Sent {sent} bytes to server")
-                        if sent < len(data):
-                            # Not all data was sent, keep the rest
-                            self.message_queues[sock] = data[sent:]
-                        else:
-                            # Done sending, remove from output, add to input
-                            del self.message_queues[sock]
-                            self.outputs.remove(sock)
-                            if sock not in self.inputs:
-                                self.inputs.append(sock)
-                            print("All data sent to server, now listening for response")
-                    except Exception as e:
-                        print(f"Error sending data to server: {e}")
-                        self.cleanup(sock)
+    def send_to_server(self, server_socket: socket.socket) -> None:
+        try:
+            data = self.message_queues[server_socket]
+            sent = server_socket.send(data)
+            print(f"Sent {sent} bytes to server")
+            if sent < len(data):
+                self.message_queues[server_socket] = data[sent:]
+            else:
+                del self.message_queues[server_socket]
+                if server_socket in self.outputs:
+                    self.outputs.remove(server_socket)
+                if server_socket not in self.inputs:
+                    self.inputs.append(server_socket)
+                print("All data sent to server, now listening for response")
+        except Exception as e:
+            print(f"Error sending data to server: {e}")
+            self.cleanup(server_socket)
+
+
 
     def accept_new_client(self) -> None:
         client_socket, client_address = self.listener.accept()
@@ -288,54 +290,57 @@ class ProxyServer:
             return None
 
     def adjust_request(self, request_data: bytes) -> bytes:
-        # Split the request into lines and get the first line (request line)
-        lines = request_data.decode().split('\r\n')
-        request_line = lines[0]
+        lines = request_data.decode(errors='replace').split('\r\n')
 
-        # Split request line into method, path, version parts
+        # Step 1: Rewrite the request line (GET /path HTTP/1.1)
+        lines[0], host = self.rewrite_request_line(lines[0])
+
+        # Step 2: Rewrite or insert the Host header
+        lines = self.rewrite_host_header(lines, host)
+
+        # Step 3: Clean up connection headers
+        lines = self.rewrite_connection_headers(lines)
+
+        return '\r\n'.join(lines).encode()
+
+    def rewrite_request_line(self, request_line: str) -> tuple[str, str]:
         parts = request_line.split()
-        if len(parts) >= 2:
-            # Remove leading slash and split path into host/path components
-            full_path = parts[1].lstrip('/')
-            path_parts = full_path.split('/', 1)
-            if len(path_parts) == 2:
-                # Extract host and path
-                host, path = path_parts
-                # Add trailing slash if path is empty
-                if not path:
-                    path = "/"
-                # Rewrite request line to standard format: METHOD /path HTTP/ver
-                lines[0] = f"{parts[0]} /{path} {parts[2]}"
-                # Remove any existing Host headers
-                lines = [line for line in lines if not line.lower().startswith('host:')]
-                # Add new Host header after request line
-                lines.insert(1, f"Host: {host}")
-            elif len(path_parts) == 1:
-                # Only host part, no path - add trailing slash
-                host = path_parts[0]
-                # Rewrite request line to standard format: METHOD / HTTP/ver
-                lines[0] = f"{parts[0]} / {parts[2]}"
-                # Remove any existing Host headers
-                lines = [line for line in lines if not line.lower().startswith('host:')]
-                # Add new Host header after request line
-                lines.insert(1, f"Host: {host}")
+        if len(parts) < 2:
+            return request_line, ""
 
-        # Process headers, removing/modifying connection headers
+        full_path = parts[1].lstrip('/')
+        path_parts = full_path.split('/', 1)
+
+        if len(path_parts) == 2:
+            host, path = path_parts
+            if not path:
+                path = "/"
+            new_line = f"{parts[0]} /{path} {parts[2]}"
+            return new_line, host
+
+        elif len(path_parts) == 1:
+            host = path_parts[0]
+            new_line = f"{parts[0]} / {parts[2]}"
+            return new_line, host
+
+        return request_line, ""
+
+    def rewrite_host_header(self, lines: list[str], host: str) -> list[str]:
+        lines = [line for line in lines if not line.lower().startswith('host:')]
+        if host:
+            lines.insert(1, f"Host: {host}")
+        return lines
+
+    def rewrite_connection_headers(self, lines: list[str]) -> list[str]:
         new_lines = []
         for line in lines:
             if line.lower().startswith("proxy-connection:"):
-                # Skip proxy-connection headers
                 continue
             elif line.lower().startswith("connection:"):
-                # Replace connection header with close
                 new_lines.append("Connection: close")
             else:
-                # Keep all other headers unchanged
                 new_lines.append(line)
-
-        # Join lines back together with CRLF and encode to bytes
-        adjusted = '\r\n'.join(new_lines).encode()
-        return adjusted
+        return new_lines
 
 
 if __name__ == '__main__':
